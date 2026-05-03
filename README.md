@@ -1,26 +1,28 @@
-# 💬 Projeto de Comunicação via Sockets - Redes de Computadores
+# Projeto de Comunicacao via Sockets
 
-Este projeto foi desenvolvido como parte de um trabalho prático da disciplina de **Infraestrutura de Redes e Comunicação**. A aplicação implementa uma comunicação básica entre **cliente** e **servidor** utilizando **sockets TCP em Python**, com foco na criação da base inicial do sistema de transmissão confiável que será expandido nas próximas etapas do trabalho.
+Trabalho pratico da disciplina de Infraestrutura de Redes e Comunicacao.
 
-## 📌 Objetivo da Etapa Atual
+A aplicacao usa sockets TCP em Python para fazer a comunicacao entre cliente e servidor. Nesta segunda entrega, o sistema ja faz o handshake inicial e tambem permite a troca de mensagens em um canal sem erros e sem perdas.
 
-Nesta etapa do projeto, o objetivo é implementar:
+## Objetivo desta entrega
 
-1. a conexão entre cliente e servidor via socket;
-2. o **handshake inicial** da comunicação;
-3. a troca de parâmetros básicos no início da conexão, como:
-   - **modo de operação**;
-   - **tamanho máximo da mensagem**.
+Nesta etapa foram implementados:
 
-Essa etapa corresponde à base da aplicação, preparando a estrutura para as próximas implementações do trabalho.
+1. conexao entre cliente e servidor via socket;
+2. handshake inicial com modo de operacao e tamanho maximo da mensagem;
+3. envio de mensagens de texto do cliente para o servidor;
+4. divisao da mensagem em pacotes com ate 4 caracteres;
+5. envio de pacotes isolados ou em lote;
+6. confirmacoes do servidor para o cliente;
+7. reconstrucao da mensagem completa no servidor.
 
-## ⚙️ Tecnologias Utilizadas
+## Tecnologias
 
-- Python 3.x
-- Biblioteca `socket` (nativa do Python)
-- Protocolo de transporte: **TCP/IP**
+- Python 3
+- Biblioteca `socket`
+- Biblioteca `json`
 
-## 📁 Estrutura do Projeto
+## Arquivos
 
 ```text
 .
@@ -29,84 +31,127 @@ Essa etapa corresponde à base da aplicação, preparando a estrutura para as pr
 └── README.md
 ```
 
-## 🔄 Funcionamento
+## Protocolo usado
 
-1. O servidor é iniciado e fica aguardando conexão na porta configurada.
-2. O cliente se conecta ao servidor.
-3. O cliente informa os dados iniciais da comunicação:
+O handshake e enviado pelo cliente no formato:
 
-- modo de operação (gbn ou rs)
-- tamanho máximo da mensagem
+```text
+modo,tamanho_maximo
+```
 
-4. Essas informações são enviadas ao servidor no handshake inicial.
-5. O servidor valida os dados recebidos.
-6. O servidor retorna uma resposta de confirmação ao cliente.
+Exemplo:
 
-## 🤝 Handshake Inicial
+```text
+gbn,30
+```
 
-O handshake é utilizado para estabelecer os parâmetros iniciais da comunicação entre cliente e servidor.
+O servidor responde:
 
-- Dados enviados pelo cliente
+```text
+Handshake OK | modo=gbn | tamanho_max=30 | janela=5
+```
 
-* modo de operação
-  - gbn
-  - rs
-* tamanho máximo da mensagem - valor inteiro - mínimo de 30
-  Exemplo de mensagem enviada
-  gbn,30
-  Exemplo de resposta do servidor
-  Handshake OK | modo=gbn | tamanho_max=30
+Depois do handshake, as mensagens sao enviadas em JSON, uma por linha. Cada pacote possui:
 
-## 📏 Sobre o tamanho máximo da mensagem
+```json
+{
+  "tipo": "DADOS",
+  "sequencia": 0,
+  "total": 4,
+  "conteudo": "test",
+  "checksum": 192,
+  "fim_lote": false,
+  "fim_mensagem": false
+}
+```
 
-O sistema solicita um limite máximo para a mensagem, definido no início da comunicação.
+O campo `conteudo` tem no maximo 4 caracteres.
 
-Esse valor:
+As confirmacoes tambem sao enviadas em JSON:
 
-deve ser informado pelo cliente;
-deve ser um número inteiro;
-deve ser maior ou igual a 30.
+```json
+{
+  "tipo": "ACK",
+  "modo": "gbn",
+  "sequencia": 3,
+  "status": "ok"
+}
+```
 
-## ▶️ Como Executar
+## Modos
 
-1. Iniciar o servidor
-   python server.py
-2. Em outro terminal, iniciar o cliente
-   python client.py
-3. Interagir com o sistema
-   Informe o modo desejado (gbn ou rs);
-   Informe o tamanho máximo da mensagem;
-   Aguarde a resposta do servidor após o handshake.
+- `rs`: o servidor confirma cada pacote recebido.
+- `gbn`: o servidor envia uma confirmacao cumulativa ao final de cada lote.
 
-## 🧪 Exemplo de execução
+A janela inicial e definida pelo servidor com valor 5. Quando o cliente escolhe enviar pacote isolado, a janela usada fica com valor 1.
 
-- Cliente
-  Escolha o modo (gbn/rs): gbn
-  Digite o tamanho máximo da mensagem (mínimo 30): 30
-  Resposta do servidor: Handshake OK | modo=gbn | tamanho_max=30
-- Servidor
-  Servidor aguardando conexão na porta 2048...
-  Conectado a ('127.0.0.1', XXXXX)
-  Handshake recebido: gbn,30
+## Como executar
 
-🤖 Uso de IA
+Primeiro, inicie o servidor:
 
-Foi utilizada IA como apoio para:
+```bash
+python3 server.py
+```
 
-interpretar o enunciado do trabalho;
-organizar a estrutura do README;
-auxiliar na redação da documentação desta etapa;
-esclarecer a interpretação de requisitos da primeira implementação.
+Depois, em outro terminal, inicie o cliente:
 
-A utilização da IA ocorreu apenas como apoio à organização e documentação. O código final foi revisado e compreendido pelo grupo antes da entrega.
+```bash
+python3 client.py
+```
 
-## 👥 Equipe
+No cliente:
+
+1. escolha o modo `gbn` ou `rs`;
+2. informe o tamanho maximo da mensagem, no minimo 30;
+3. digite a mensagem;
+4. escolha se deseja enviar em lote ou pacote por pacote.
+
+Para encerrar, digite:
+
+```text
+sair
+```
+
+## Exemplo de uso
+
+Cliente:
+
+```text
+Escolha o modo (gbn/rs): gbn
+Digite o tamanho maximo da mensagem (minimo 30): 30
+Resposta do servidor: Handshake OK | modo=gbn | tamanho_max=30 | janela=5
+Digite a mensagem (ou 'sair' para encerrar): teste de redes
+Enviar em lote? (s/n): s
+Total de pacotes: 4
+Pacote enviado | seq=0 | conteudo='test' | checksum=192
+ACK recebido | modo=gbn | seq=3 | status=ok
+```
+
+Servidor:
+
+```text
+Servidor aguardando conexao na porta 2048...
+Conectado a ('127.0.0.1', XXXXX)
+Handshake recebido: gbn,30
+Pacote recebido | seq=0 | total=4 | conteudo='test' | checksum=192
+Mensagem completa: teste de redes
+```
+
+## O que ainda fica para a proxima entrega
+
+Para a entrega final ainda falta simular erros e perdas de pacotes e fazer o comportamento correto de retransmissao.
+
+## Uso de IA
+
+Foi utilizada IA como apoio para interpretar o enunciado, revisar a organizacao do codigo e ajustar a documentacao. O grupo revisou o resultado antes da entrega.
+
+## Equipe
 
 - Artur Antunes
 - Danilo Duleba
 - Gabriel Pontes
 - Gabriel Roma
-- João Cláudio Beltrão
+- Joao Claudio Beltrao
 - Kaique Alves
 - Luca Albuquerque
 - Luiz Flavius Veras
