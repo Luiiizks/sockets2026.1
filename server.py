@@ -4,28 +4,39 @@ import socket
 
 PORTA = 2048
 JANELA_INICIAL = 5
+CHAVE = "redes"
 
 
 def calcular_checksum(texto):
     return sum(texto.encode()) % 256
 
 
+def descriptografar(texto):
+    dados = bytes.fromhex(texto)
+    chave_bytes = CHAVE.encode()
+    original = bytes(
+        dados[i] ^ chave_bytes[i % len(chave_bytes)]
+        for i in range(len(dados))
+    )
+    return original.decode()
+
+
 def enviar_json(conexao, dados):
     conexao.send((json.dumps(dados) + "\n").encode())
 
 
-def enviar_ack(conexao, modo, sequencia, status):
-    ack = {
-        "tipo": "ACK",
+def enviar_resposta(conexao, tipo, modo, sequencia, status):
+    resposta = {
+        "tipo": tipo,
         "modo": modo,
         "sequencia": sequencia,
         "status": status,
     }
-    enviar_json(conexao, ack)
+    enviar_json(conexao, resposta)
 
 
 def reconstruir_mensagem(recebidos, total):
-    if len(recebidos) != total:
+    if total is None or len(recebidos) != total:
         return None
     return "".join(recebidos[i] for i in range(total))
 
@@ -66,6 +77,8 @@ def main():
     buffer = ""
     recebidos = {}
     esperado = 0
+    total_mensagem = None
+    aguardando_reenvio = False
 
     while True:
         dados = conexao.recv(1024).decode()
@@ -91,9 +104,15 @@ def main():
                 return
 
             sequencia = pacote["sequencia"]
-            conteudo = pacote["conteudo"]
             checksum = pacote["checksum"]
             total = pacote["total"]
+            total_mensagem = total
+
+            try:
+                conteudo = descriptografar(pacote["conteudo"])
+            except Exception:
+                conteudo = ""
+
             checksum_calculado = calcular_checksum(conteudo)
 
             print(
@@ -101,35 +120,44 @@ def main():
                 f"conteudo='{conteudo}' | checksum={checksum}"
             )
 
+            if modo == "gbn" and aguardando_reenvio:
+                if pacote["fim_lote"] or pacote["fim_mensagem"]:
+                    aguardando_reenvio = False
+                continue
+
             if checksum != checksum_calculado:
-                enviar_ack(conexao, modo, sequencia, "erro_checksum")
+                enviar_resposta(conexao, "ERRO", modo, sequencia, "checksum")
+                if modo == "gbn" and not (pacote["fim_lote"] or pacote["fim_mensagem"]):
+                    aguardando_reenvio = True
                 continue
 
             if modo == "rs":
                 recebidos[sequencia] = conteudo
-                enviar_ack(conexao, modo, sequencia, "ok")
+                enviar_resposta(conexao, "ACK", modo, sequencia, "ok")
 
             elif modo == "gbn":
-                if sequencia == esperado:
+                if sequencia < esperado:
+                    if pacote["fim_lote"] or pacote["fim_mensagem"]:
+                        enviar_resposta(conexao, "ACK", modo, esperado - 1, "ok")
+                elif sequencia == esperado:
                     recebidos[sequencia] = conteudo
                     esperado += 1
-                    status = "ok"
+
+                    if pacote["fim_lote"] or pacote["fim_mensagem"]:
+                        enviar_resposta(conexao, "ACK", modo, esperado - 1, "ok")
                 else:
-                    status = "fora_de_ordem"
+                    enviar_resposta(conexao, "ERRO", modo, esperado, "fora_de_ordem")
+                    if not (pacote["fim_lote"] or pacote["fim_mensagem"]):
+                        aguardando_reenvio = True
 
-                if pacote["fim_lote"] or pacote["fim_mensagem"]:
-                    enviar_ack(conexao, modo, esperado - 1, status)
+            mensagem = reconstruir_mensagem(recebidos, total_mensagem)
 
-            if pacote["fim_mensagem"]:
-                mensagem = reconstruir_mensagem(recebidos, total)
-
-                if mensagem is not None:
-                    print("Mensagem completa:", mensagem)
-                else:
-                    print("Mensagem incompleta.")
-
+            if mensagem is not None:
+                print("Mensagem completa:", mensagem)
                 recebidos = {}
                 esperado = 0
+                total_mensagem = None
+                aguardando_reenvio = False
 
     conexao.close()
     servidor.close()

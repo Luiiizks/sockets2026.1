@@ -4,6 +4,8 @@ import socket
 
 PORTA = 2048
 TAMANHO_PAYLOAD = 4
+TIMEOUT = 2.5
+CHAVE = "redes"
 
 
 def escolher_modo():
@@ -30,8 +32,40 @@ def escolher_envio():
     return escolha == "s"
 
 
+def escolher_pacote(texto, total):
+    while True:
+        try:
+            pacote = int(input(texto))
+            if pacote == -1 or 0 <= pacote < total:
+                return pacote
+            print("Informe -1 ou um numero de pacote valido.")
+        except ValueError:
+            print("Digite um numero inteiro.")
+
+
+def escolher_falhas(total):
+    simular = input("Simular erro/perda? (s/n): ").strip().lower()
+
+    if simular != "s":
+        return -1, -1
+
+    erro = escolher_pacote("Pacote com erro de integridade (-1 para nenhum): ", total)
+    perda = escolher_pacote("Pacote perdido uma vez (-1 para nenhum): ", total)
+    return erro, perda
+
+
 def calcular_checksum(texto):
     return sum(texto.encode()) % 256
+
+
+def criptografar(texto):
+    texto_bytes = texto.encode()
+    chave_bytes = CHAVE.encode()
+    cifrado = bytes(
+        texto_bytes[i] ^ chave_bytes[i % len(chave_bytes)]
+        for i in range(len(texto_bytes))
+    )
+    return cifrado.hex()
 
 
 def criar_pacotes(mensagem, janela):
@@ -44,8 +78,9 @@ def criar_pacotes(mensagem, janela):
             "tipo": "DADOS",
             "sequencia": indice,
             "total": len(partes),
-            "conteudo": parte,
+            "conteudo": criptografar(parte),
             "checksum": calcular_checksum(parte),
+            "tamanho": len(parte),
             "fim_lote": fim_lote,
             "fim_mensagem": indice == len(partes) - 1,
         }
@@ -69,6 +104,107 @@ def receber_linha(conexao, buffer):
     return linha, buffer
 
 
+def enviar_pacote(cliente, pacote, erro, perda, tentativas):
+    sequencia = pacote["sequencia"]
+
+    if sequencia == perda and tentativas[sequencia] == 0:
+        tentativas[sequencia] += 1
+        print(f"Perda simulada | seq={sequencia}")
+        return
+
+    pacote_envio = pacote.copy()
+
+    if sequencia == erro and tentativas[sequencia] == 0:
+        pacote_envio["conteudo"] = criptografar("#" * pacote["tamanho"])
+        print(f"Erro simulado | seq={sequencia}")
+
+    enviar_json(cliente, pacote_envio)
+    tentativas[sequencia] += 1
+
+    print(
+        f"Pacote enviado | seq={sequencia} | "
+        f"checksum={pacote['checksum']} | tentativa={tentativas[sequencia]}"
+    )
+
+
+def enviar_gbn(cliente, pacotes, janela, erro, perda):
+    base = 0
+    buffer = ""
+    tentativas = [0] * len(pacotes)
+
+    while base < len(pacotes):
+        fim = min(base + janela, len(pacotes))
+
+        for indice in range(base, fim):
+            enviar_pacote(cliente, pacotes[indice], erro, perda, tentativas)
+
+        try:
+            linha, buffer = receber_linha(cliente, buffer)
+        except socket.timeout:
+            print(f"Timeout | reenviando a partir do pacote {base}")
+            continue
+
+        if linha is None:
+            return False
+
+        resposta = json.loads(linha)
+        print(
+            f"{resposta['tipo']} recebido | modo={resposta['modo']} | "
+            f"seq={resposta['sequencia']} | status={resposta['status']}"
+        )
+
+        if resposta["tipo"] == "ACK":
+            base = resposta["sequencia"] + 1
+        else:
+            base = resposta["sequencia"]
+
+    return True
+
+
+def enviar_rs(cliente, pacotes, janela, erro, perda):
+    pendentes = set(range(len(pacotes)))
+    buffer = ""
+    tentativas = [0] * len(pacotes)
+
+    while pendentes:
+        inicio = min(pendentes)
+        janela_atual = [
+            indice
+            for indice in range(inicio, min(inicio + janela, len(pacotes)))
+            if indice in pendentes
+        ]
+        esperando = set(janela_atual)
+
+        for indice in janela_atual:
+            enviar_pacote(cliente, pacotes[indice], erro, perda, tentativas)
+
+        while esperando:
+            try:
+                linha, buffer = receber_linha(cliente, buffer)
+            except socket.timeout:
+                print("Timeout | reenviando pacotes pendentes da janela")
+                break
+
+            if linha is None:
+                return False
+
+            resposta = json.loads(linha)
+            sequencia = resposta["sequencia"]
+
+            print(
+                f"{resposta['tipo']} recebido | modo={resposta['modo']} | "
+                f"seq={sequencia} | status={resposta['status']}"
+            )
+
+            if resposta["tipo"] == "ACK" and sequencia in pendentes:
+                pendentes.remove(sequencia)
+
+            if sequencia in esperando:
+                esperando.remove(sequencia)
+
+    return True
+
+
 def enviar_mensagem(cliente, modo, tamanho_maximo, janela_servidor):
     mensagem = input("Digite a mensagem (ou 'sair' para encerrar): ")
 
@@ -86,38 +222,15 @@ def enviar_mensagem(cliente, modo, tamanho_maximo, janela_servidor):
     usar_lote = escolher_envio()
     janela = janela_servidor if usar_lote else 1
     pacotes = criar_pacotes(mensagem, janela)
-    buffer = ""
-    indice = 0
 
     print(f"Total de pacotes: {len(pacotes)}")
+    erro, perda = escolher_falhas(len(pacotes))
+    cliente.settimeout(TIMEOUT)
 
-    while indice < len(pacotes):
-        lote = pacotes[indice:indice + janela]
+    if modo == "gbn":
+        return enviar_gbn(cliente, pacotes, janela, erro, perda)
 
-        for pacote in lote:
-            enviar_json(cliente, pacote)
-            print(
-                f"Pacote enviado | seq={pacote['sequencia']} | "
-                f"conteudo='{pacote['conteudo']}' | checksum={pacote['checksum']}"
-            )
-
-        quantidade_acks = len(lote) if modo == "rs" else 1
-
-        for _ in range(quantidade_acks):
-            linha, buffer = receber_linha(cliente, buffer)
-            if linha is None:
-                print("Conexao encerrada pelo servidor.")
-                return False
-
-            ack = json.loads(linha)
-            print(
-                f"ACK recebido | modo={ack['modo']} | "
-                f"seq={ack['sequencia']} | status={ack['status']}"
-            )
-
-        indice += janela
-
-    return True
+    return enviar_rs(cliente, pacotes, janela, erro, perda)
 
 
 def main():
